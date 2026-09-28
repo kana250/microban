@@ -19,14 +19,20 @@ from constants import MOTOR_TO_ID, MOTOR_SIGN, PRESENT_CURRENT_UNIT_A
 
 CONFIG_PATH = "/home/orangepi/src/khr3-mujoco-control/integrations/microban/custom_hat/config/microban_auto_hat_orangepi_zero2w.yaml"
 
-# Motor groups for robust Sync Read & soft-start
+# Three-servo groups keep each GPIO bit-bang response train short enough to
+# recover from an occasional corrupted status packet. Two groups are sampled
+# per 50 Hz control tick, so every joint is refreshed at roughly 14 Hz while
+# commands continue to be written at 50 Hz.
 SYNC_GROUPS = [
-    [21, 22, 23, 24, 25, 26],  # Right leg (6 axes)
-    [11, 12, 13, 14, 15, 16],  # Left leg (6 axes)
+    [21, 22, 23],              # Right hip
+    [24, 25, 26],              # Right knee / ankle
+    [11, 12, 13],              # Left hip
+    [14, 15, 16],              # Left knee / ankle
     [41, 42, 43],              # Right arm (3 axes)
     [31, 32, 33],              # Left arm (3 axes)
     [51],                      # Head (1 axis)
 ]
+MOTION_GROUPS_PER_READ = 2
 
 
 class RobotController:
@@ -49,8 +55,11 @@ class RobotController:
         self._bus = DynamixelBus.open(self.cfg.uart)
         print("[RobotController] Dynamixel bus ready.")
 
-        # 2. Open BNO055 IMU via I2C-2 (100 Hz)
-        print("[RobotController] Starting BNO055 IMU reader on I2C-2 (100 Hz)...")
+        # 2. Open BNO055 IMU on a background core at the configured rate.
+        print(
+            f"[RobotController] Starting BNO055 IMU reader on I2C-"
+            f"{self.cfg.imu.i2c_bus} ({self.cfg.imu.frequency_hz:.0f} Hz)..."
+        )
         self._imu_reader = ThreadedBNO055Reader.open(self.cfg.imu)
         self._imu_reader.start()
         print("[RobotController] BNO055 IMU reader running.")
@@ -60,6 +69,7 @@ class RobotController:
         self._vel_cache: dict[int, float] = {}
         self._last_read_time: float = 0.0
         self._last_read_ids: tuple[int, ...] = ()
+        self._motion_group_cursor = 0
         self._torque_enabled_ids: set[int] = set()
 
         # Position reads are deliberately deferred to hold_present_position().
@@ -102,27 +112,30 @@ class RobotController:
         now = time.perf_counter()
         target_ids = set(ids)
 
-        for grp in SYNC_GROUPS:
-            sub = [mid for mid in grp if mid in target_ids]
-            if not sub:
-                continue
-            last_error = None
-            for attempt in range(3):
+        eligible_groups = [
+            [mid for mid in group if mid in target_ids]
+            for group in SYNC_GROUPS
+            if any(mid in target_ids for mid in group)
+        ]
+        group_count = min(MOTION_GROUPS_PER_READ, len(eligible_groups))
+
+        selected_groups = [
+            eligible_groups[(self._motion_group_cursor + offset) % len(eligible_groups)]
+            for offset in range(group_count)
+        ]
+        self._motion_group_cursor = (
+            self._motion_group_cursor + group_count
+        ) % len(eligible_groups)
+
+        for sub in selected_groups:
+            try:
+                motion = self._bus.sync_read_motion(sub)
+            except Exception as exc:
                 try:
-                    motion = self._bus.sync_read_motion(sub)
-                    break
-                except Exception as exc:
-                    last_error = exc
-                    try:
-                        self._bus._port.clearPort()
-                    except Exception:
-                        pass
-                    if attempt < 2:
-                        time.sleep(0.005)
-            else:
-                raise RuntimeError(
-                    f"motion read failed for motor IDs {sub} after 3 attempts"
-                ) from last_error
+                    self._bus._port.clearPort()
+                except Exception:
+                    pass
+                raise RuntimeError(f"motion read failed for motor IDs {sub}") from exc
 
             for mid, tick, raw_vel in zip(
                 sub, motion.position_ticks, motion.velocity_raw, strict=True
@@ -234,7 +247,10 @@ class RobotController:
         return self._pos_cache[motor_id]
 
     def sync_read_present_velocity(self, ids: list[int]) -> list[float]:
-        if (time.perf_counter() - self._last_read_time) > 0.005 or self._last_read_ids != tuple(ids):
+        # Observer reads position immediately before velocity. sync_read_motion()
+        # already returned both, so never start a duplicate bus transaction for
+        # the same ID set merely because the position read took over 5 ms.
+        if self._last_read_time == 0.0 or self._last_read_ids != tuple(ids):
             self._update_motion(ids)
         return [self._vel_cache[mid] for mid in ids]
 
