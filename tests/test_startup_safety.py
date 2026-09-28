@@ -10,9 +10,14 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 MOTOR_IDS = [11, 21]
+_MAIN_MODULE = None
 
 
 def load_main_module():
+    global _MAIN_MODULE
+    if _MAIN_MODULE is not None:
+        return _MAIN_MODULE
+
     constants = types.ModuleType("constants")
     constants.MOTOR_TO_ID = {"left_hip_yaw": 11, "right_hip_yaw": 21}
     constants.NEUTRAL_POSE = {"left_hip_yaw": 0.0, "right_hip_yaw": 0.0}
@@ -59,7 +64,8 @@ def load_main_module():
         module = importlib.util.module_from_spec(spec)
         assert spec.loader is not None
         spec.loader.exec_module(module)
-    return module
+    _MAIN_MODULE = module
+    return _MAIN_MODULE
 
 
 class FakeController:
