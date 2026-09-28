@@ -64,64 +64,6 @@ class HipYawBoundaryTests(unittest.TestCase):
         self.assertEqual(self.controller(0)._rad_to_tick(0.0, 11), 0)
         self.assertEqual(self.controller(4095)._rad_to_tick(0.0, 11), 4095)
 
-    def test_startup_normalizes_positive_multi_turn_position(self):
-        controller = self.controller(None)
-        controller._hip_yaw_edge = {}
-        controller._torque_enabled_ids = set()
-        controller._pos_cache = {}
-        controller._vel_cache = {}
-        controller._bus = FakeBus({11: 4149})
-
-        positions = controller.hold_present_position([11])
-
-        self.assertEqual(controller._bus.goal_write, ([11], [53]))
-        self.assertAlmostEqual(positions[0], controller._tick_to_rad(53, 11))
-
-    def test_startup_normalizes_negative_multi_turn_position(self):
-        controller = self.controller(None)
-        controller._hip_yaw_edge = {}
-        controller._torque_enabled_ids = set()
-        controller._pos_cache = {}
-        controller._vel_cache = {}
-        controller._bus = FakeBus({11: -1})
-
-        positions = controller.hold_present_position([11])
-
-        self.assertEqual(controller._bus.goal_write, ([11], [4095]))
-        self.assertAlmostEqual(positions[0], controller._tick_to_rad(4095, 11))
-
-    def test_startup_normalizes_multi_turn_position_for_other_joints(self):
-        controller = self.controller(None)
-        controller._id_to_sign[12] = 1.0
-        controller._hip_yaw_edge = {}
-        controller._torque_enabled_ids = set()
-        controller._pos_cache = {}
-        controller._vel_cache = {}
-        controller._bus = FakeBus({12: 4096 + 2048})
-
-        positions = controller.hold_present_position([12])
-
-        self.assertEqual(controller._bus.goal_write, ([12], [2048]))
-        self.assertAlmostEqual(positions[0], 0.0)
-
-
-class FakePort:
-    def clearPort(self):
-        pass
-
-
-class FakeBus:
-    def __init__(self, positions):
-        self.positions = positions
-        self.goal_write = None
-        self._port = FakePort()
-
-    def read_present_position_tick(self, motor_id):
-        return self.positions[motor_id]
-
-    def sync_write_goal_ticks(self, ids, ticks):
-        self.goal_write = (list(ids), list(ticks))
-
 
 if __name__ == "__main__":
     unittest.main()

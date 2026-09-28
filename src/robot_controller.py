@@ -35,7 +35,6 @@ SYNC_GROUPS = [
 MOTION_GROUPS_PER_READ = 2
 HIP_YAW_IDS = (11, 21)
 HIP_YAW_SAFE_EDGE_TICKS = 768  # 67.5 degrees from the 0/4095 physical center
-POSITION_TICKS_PER_REVOLUTION = 4096
 
 
 class RobotController:
@@ -229,12 +228,6 @@ class RobotController:
                     "after 3 attempts"
                 ) from last_error
 
-            # With torque disabled, XL330 Present Position may use a signed,
-            # multi-turn representation. Goal Position in Position Control Mode
-            # is one-turn absolute, so write the equivalent 0..4095 value.
-            # Otherwise values such as 4149 (the same angle as 53) can become an
-            # apparent full-revolution error when torque is enabled.
-            tick = tick % POSITION_TICKS_PER_REVOLUTION
             ticks.append(tick)
 
             if motor_id in HIP_YAW_IDS:
