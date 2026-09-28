@@ -182,16 +182,19 @@ class Scheduler:
 
         self._cleanup_done = True
 
-        if self.input_source:
-            self.input_source.stop()
-
-        shutdown = getattr(self.controller, "shutdown", None)
-        if callable(shutdown):
-            shutdown()
-
         motor_ids = list(MOTOR_TO_ID.values())
-        self.controller.sync_write_torque_enable(motor_ids, [False] * len(motor_ids))
-        print("Torque disabled on all motors", end="\r\n", flush=True)
+        try:
+            if self.input_source:
+                self.input_source.stop()
+        finally:
+            try:
+                self.controller.sync_write_torque_enable(motor_ids, [False] * len(motor_ids))
+                print("Torque disabled on all motors", end="\r\n", flush=True)
+            finally:
+                # Keep the bus open until after Torque OFF has been transmitted.
+                shutdown = getattr(self.controller, "shutdown", None)
+                if callable(shutdown):
+                    shutdown()
 
         if self.stop_flag_path.exists():
             self.stop_flag_path.unlink()

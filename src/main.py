@@ -54,10 +54,19 @@ def build_input_source() -> InputSource:
     return KeyboardInputSource(move_keys=MOVE_KEYS)
 
 
-def ramp_to_neutral(controller: RobotController, duration_s: float = 3.5) -> None:
+def ramp_to_neutral(
+    controller: RobotController,
+    duration_s: float = 3.5,
+    initial_positions: list[float] | None = None,
+) -> None:
     """Ramp all motors smoothly to neutral position at 50 Hz before starting the control loop."""
     motor_ids = list(MOTOR_TO_ID.values())
-    initial_positions = np.array(controller.sync_read_present_position(motor_ids))
+    if initial_positions is None:
+        initial_positions = controller.sync_read_present_position(motor_ids)
+    if len(initial_positions) != len(motor_ids):
+        raise RuntimeError("initial position count does not match the configured motors")
+
+    initial_positions = np.array(initial_positions)
     target_neutral = np.array([NEUTRAL_POSE[name] for name in MOTOR_TO_ID])
 
     print(f"Ramping all motors to neutral position smoothly over {duration_s:.1f}s (50 Hz)...")
@@ -85,14 +94,23 @@ def main() -> None:
 
     PID_FILE.write_text(f"{os.getpid()}\n", encoding="ascii")
 
-    controller = RobotController()
+    controller = None
     motor_ids = list(MOTOR_TO_ID.values())
-    controller.sync_write_torque_enable(motor_ids, [True] * len(motor_ids))
-    controller.sync_write_status_return_level(motor_ids, [1] * len(motor_ids))
-    controller.sync_write_kp(motor_ids, [KP_DEFAULT] * len(motor_ids))
 
     try:
-        ramp_to_neutral(controller)
+        controller = RobotController()
+
+        # A previous process may have left torque enabled and Goal Position stale.
+        # Disable torque first, then copy the exact Present Position ticks to Goal
+        # Position before re-enabling it. This prevents an abrupt jump before the
+        # controlled neutral ramp begins.
+        controller.sync_write_torque_enable(motor_ids, [False] * len(motor_ids))
+        initial_positions = controller.hold_present_position(motor_ids)
+        controller.sync_write_status_return_level(motor_ids, [1] * len(motor_ids))
+        controller.sync_write_kp(motor_ids, [KP_DEFAULT] * len(motor_ids))
+        controller.sync_write_torque_enable(motor_ids, [True] * len(motor_ids))
+
+        ramp_to_neutral(controller, initial_positions=initial_positions)
 
         scheduler = Scheduler(
             frequency_hz=50.0,
@@ -118,6 +136,15 @@ def main() -> None:
         scheduler.run()
 
     finally:
+        if controller is not None:
+            if not getattr(controller, "is_closed", False):
+                try:
+                    controller.sync_write_torque_enable(motor_ids, [False] * len(motor_ids))
+                    print("Torque disabled on all motors.")
+                except Exception as exc:
+                    print(f"WARNING: failed to disable motor torque during cleanup: {exc}")
+                finally:
+                    controller.shutdown()
         if PID_FILE.exists():
             PID_FILE.unlink()
 

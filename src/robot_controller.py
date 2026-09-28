@@ -35,7 +35,12 @@ class RobotController:
     Drop-in replacement for the official Rhoban Microban RobotController.
     """
 
+    @property
+    def is_closed(self) -> bool:
+        return self._closed
+
     def __init__(self, serial_port: str = None, baudrate: int = None, timeout: float = 0.1) -> None:
+        self._closed = False
         self.cfg = load_config(CONFIG_PATH)
         self._id_to_sign: dict[int, float] = {MOTOR_TO_ID[name]: MOTOR_SIGN[name] for name in MOTOR_TO_ID}
 
@@ -55,6 +60,7 @@ class RobotController:
         self._vel_cache: dict[int, float] = {}
         self._last_read_time: float = 0.0
         self._last_read_ids: tuple[int, ...] = ()
+        self._torque_enabled_ids: set[int] = set()
 
         # 3. Read exact initial positions individually from hardware to ensure 100% accurate baseline
         print("[RobotController] Initializing servo position baselines from hardware...")
@@ -119,21 +125,65 @@ class RobotController:
         self._last_read_ids = tuple(ids)
 
     def sync_write_torque_enable(self, ids: list[int], values: list[bool]) -> None:
-        """Enable or disable torque safely. NEVER overwrite goal positions here!"""
+        """Enable or disable torque, rolling back partial soft-start failures."""
+        if len(ids) != len(values):
+            raise ValueError("torque enable IDs and values must have equal length")
+        if not ids:
+            raise ValueError("at least one motor ID is required")
+
         all_false = not any(values)
         if all_false:
             self._bus.sync_write_torque_enable(ids, [False] * len(ids))
+            self._torque_enabled_ids.difference_update(ids)
             return
+        if not all(values):
+            raise ValueError("mixed torque enable values are not supported")
 
         # Staggered soft-start (legs -> arms -> head) to prevent voltage brown-out
-        for grp in SYNC_GROUPS:
-            sub_ids = [mid for mid in grp if mid in ids]
-            if sub_ids:
-                try:
+        requested = set(ids)
+        grouped_ids = {mid for group in SYNC_GROUPS for mid in group}
+        if not requested.issubset(grouped_ids):
+            unknown = sorted(requested - grouped_ids)
+            raise ValueError(f"motor IDs are missing from SYNC_GROUPS: {unknown}")
+
+        try:
+            for grp in SYNC_GROUPS:
+                sub_ids = [mid for mid in grp if mid in requested]
+                if sub_ids:
                     self._bus.sync_write_torque_enable(sub_ids, [True] * len(sub_ids))
+                    self._torque_enabled_ids.update(sub_ids)
                     time.sleep(0.04)  # 40ms stagger between groups
-                except Exception as e:
-                    print(f"Warning: soft-start torque enable on {sub_ids} failed: {e}")
+        except Exception:
+            # A failed group may leave earlier groups powered. Best-effort rollback
+            # must happen before propagating the startup failure.
+            try:
+                self._bus.sync_write_torque_enable(ids, [False] * len(ids))
+            finally:
+                self._torque_enabled_ids.difference_update(ids)
+            raise
+
+    def hold_present_position(self, ids: list[int]) -> list[float]:
+        """Prime Goal Position from exact hardware ticks while torque is disabled.
+
+        Every position read must succeed. A hardware-alert status packet or a
+        missing servo therefore aborts startup before any torque is enabled.
+        """
+        if self._torque_enabled_ids.intersection(ids):
+            raise RuntimeError("cannot prime Goal Position while torque is enabled")
+
+        ticks: list[int] = []
+        positions: list[float] = []
+        for motor_id in ids:
+            tick = self._bus.read_present_position_tick(motor_id)
+            ticks.append(tick)
+            position = self._tick_to_rad(tick, motor_id)
+            positions.append(position)
+            self._pos_cache[motor_id] = position
+            self._vel_cache[motor_id] = 0.0
+
+        self._bus.sync_write_goal_ticks(ids, ticks)
+        print("[RobotController] Goal Position primed from current hardware position.")
+        return positions
 
     def sync_write_status_return_level(self, ids: list[int], levels: list[int]) -> None:
         self._bus.sync_write_status_return_level(ids, levels)
@@ -220,6 +270,18 @@ class RobotController:
         }
 
     def shutdown(self) -> None:
+        if self._closed:
+            return
+
+        if self._torque_enabled_ids:
+            enabled_ids = sorted(self._torque_enabled_ids)
+            try:
+                self._bus.sync_write_torque_enable(
+                    enabled_ids, [False] * len(enabled_ids)
+                )
+                self._torque_enabled_ids.clear()
+            except Exception as exc:
+                print(f"WARNING: emergency torque disable failed: {exc}")
         try:
             self._imu_reader.stop()
         except Exception:
@@ -228,6 +290,7 @@ class RobotController:
             self._bus.close()
         except Exception:
             pass
+        self._closed = True
 
     def close(self) -> None:
         self.shutdown()
