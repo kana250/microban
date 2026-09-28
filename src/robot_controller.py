@@ -62,18 +62,14 @@ class RobotController:
         self._last_read_ids: tuple[int, ...] = ()
         self._torque_enabled_ids: set[int] = set()
 
-        # 3. Read exact initial positions individually from hardware to ensure 100% accurate baseline
-        print("[RobotController] Initializing servo position baselines from hardware...")
+        # Position reads are deliberately deferred to hold_present_position().
+        # Reading all 19 servos twice during startup can overrun the bit-bang UART.
+        # The cache only provides a defined fallback for non-startup callers.
+        print("[RobotController] Initializing empty motion cache...")
         for mid in MOTOR_TO_ID.values():
-            try:
-                tick = self._bus.read_present_position_tick(mid)
-                self._pos_cache[mid] = self._tick_to_rad(tick, mid)
-                self._vel_cache[mid] = 0.0
-            except Exception as e:
-                print(f"Warning: could not read initial tick for ID {mid}: {e}")
-                self._pos_cache[mid] = 0.0
-                self._vel_cache[mid] = 0.0
-        print("[RobotController] Baseline initialization complete.")
+            self._pos_cache[mid] = 0.0
+            self._vel_cache[mid] = 0.0
+        print("[RobotController] Motion cache ready; hardware baseline is deferred.")
 
     def _rad_to_tick(self, rad: float, motor_id: int) -> int:
         hw_rad = rad * self._id_to_sign[motor_id]
@@ -173,13 +169,15 @@ class RobotController:
 
         ticks: list[int] = []
         positions: list[float] = []
-        for motor_id in ids:
+        for index, motor_id in enumerate(ids):
             tick = self._bus.read_present_position_tick(motor_id)
             ticks.append(tick)
             position = self._tick_to_rad(tick, motor_id)
             positions.append(position)
             self._pos_cache[motor_id] = position
             self._vel_cache[motor_id] = 0.0
+            if index + 1 < len(ids):
+                time.sleep(0.01)
 
         self._bus.sync_write_goal_ticks(ids, ticks)
         print("[RobotController] Goal Position primed from current hardware position.")
