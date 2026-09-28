@@ -6,6 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import numpy  # Keep the native module loaded across patched import contexts.
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
