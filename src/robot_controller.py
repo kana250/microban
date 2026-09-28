@@ -33,6 +33,8 @@ SYNC_GROUPS = [
     [51],                      # Head (1 axis)
 ]
 MOTION_GROUPS_PER_READ = 2
+HIP_YAW_IDS = (11, 21)
+HIP_YAW_SAFE_EDGE_TICKS = 768  # 67.5 degrees from the 0/4095 physical center
 
 
 class RobotController:
@@ -71,6 +73,7 @@ class RobotController:
         self._last_read_ids: tuple[int, ...] = ()
         self._motion_group_cursor = 0
         self._torque_enabled_ids: set[int] = set()
+        self._hip_yaw_edge: dict[int, int] = {}
 
         # Position reads are deliberately deferred to hold_present_position().
         # Reading all 19 servos twice during startup can overrun the bit-bang UART.
@@ -83,17 +86,27 @@ class RobotController:
 
     def _rad_to_tick(self, rad: float, motor_id: int) -> int:
         hw_rad = rad * self._id_to_sign[motor_id]
-        if motor_id in (11, 21):
+        if motor_id in HIP_YAW_IDS:
             # Hip yaw joints (ID 11 left_hip_yaw, ID 21 right_hip_yaw) have physical center at 0/4096 ticks
             t = round(hw_rad * 2048.0 / np.pi)
             tick = t if t >= 0 else t + 4096
-            return max(0, min(4095, tick))
+            tick = max(0, min(4095, tick))
+
+            # Position Control Mode does not treat 0 and 4095 as adjacent.
+            # Stay on the encoder edge selected from the measured startup pose;
+            # otherwise a one-tick logical crossing can command almost a full turn.
+            edge = self._hip_yaw_edge.get(motor_id)
+            if edge == 0 and tick >= 2048:
+                return 0
+            if edge == 4095 and tick < 2048:
+                return 4095
+            return tick
         else:
             tick = round(2048 + hw_rad * 2048.0 / np.pi)
             return max(0, min(4095, tick))
 
     def _tick_to_rad(self, tick: int, motor_id: int) -> float:
-        if motor_id in (11, 21):
+        if motor_id in HIP_YAW_IDS:
             # Hip yaw joints (ID 11 left_hip_yaw, ID 21 right_hip_yaw) have physical center at 0/4096 ticks
             t = tick if tick < 2048 else tick - 4096
             hw_rad = t * np.pi / 2048.0
@@ -216,6 +229,16 @@ class RobotController:
                 ) from last_error
 
             ticks.append(tick)
+
+            if motor_id in HIP_YAW_IDS:
+                if HIP_YAW_SAFE_EDGE_TICKS < tick < 4096 - HIP_YAW_SAFE_EDGE_TICKS:
+                    raise RuntimeError(
+                        f"hip yaw ID {motor_id} is outside the safe startup zone: "
+                        f"tick={tick}; manually return the unpowered joint near its "
+                        "forward 0/4095 position before enabling torque"
+                    )
+                self._hip_yaw_edge[motor_id] = 0 if tick < 2048 else 4095
+
             position = self._tick_to_rad(tick, motor_id)
             positions.append(position)
             self._pos_cache[motor_id] = position
