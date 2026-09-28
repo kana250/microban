@@ -106,16 +106,29 @@ class RobotController:
             sub = [mid for mid in grp if mid in target_ids]
             if not sub:
                 continue
-            try:
-                motion = self._bus.sync_read_motion(sub)
-                for mid, tick, raw_vel in zip(sub, motion.position_ticks, motion.velocity_raw):
-                    self._pos_cache[mid] = self._tick_to_rad(tick, mid)
-                    self._vel_cache[mid] = self._raw_vel_to_rad_s(raw_vel, mid)
-            except Exception:
+            last_error = None
+            for attempt in range(3):
                 try:
-                    self._bus._port.clearPort()
-                except Exception:
-                    pass
+                    motion = self._bus.sync_read_motion(sub)
+                    break
+                except Exception as exc:
+                    last_error = exc
+                    try:
+                        self._bus._port.clearPort()
+                    except Exception:
+                        pass
+                    if attempt < 2:
+                        time.sleep(0.005)
+            else:
+                raise RuntimeError(
+                    f"motion read failed for motor IDs {sub} after 3 attempts"
+                ) from last_error
+
+            for mid, tick, raw_vel in zip(
+                sub, motion.position_ticks, motion.velocity_raw, strict=True
+            ):
+                self._pos_cache[mid] = self._tick_to_rad(tick, mid)
+                self._vel_cache[mid] = self._raw_vel_to_rad_s(raw_vel, mid)
 
         self._last_read_time = now
         self._last_read_ids = tuple(ids)
