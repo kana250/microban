@@ -119,7 +119,8 @@ class StartupSafetyTests(unittest.TestCase):
             module.main()
 
         self.assertEqual(events[0], ("torque", (False, False)))
-        self.assertEqual(events[1], ("hold", (11, 21)))
+        self.assertEqual(events[1], ("status", (1, 1)))
+        self.assertEqual(events[2], ("hold", (11, 21)))
         enable_index = events.index(("torque", (True, True)))
         self.assertLess(events.index(("hold", (11, 21))), enable_index)
         self.assertLess(enable_index, events.index(("ramp", (0.1, -0.1))))

@@ -183,14 +183,32 @@ class RobotController:
         ticks: list[int] = []
         positions: list[float] = []
         for index, motor_id in enumerate(ids):
-            tick = self._bus.read_present_position_tick(motor_id)
+            last_error = None
+            for attempt in range(3):
+                try:
+                    tick = self._bus.read_present_position_tick(motor_id)
+                    break
+                except Exception as exc:
+                    last_error = exc
+                    try:
+                        self._bus._port.clearPort()
+                    except Exception:
+                        pass
+                    if attempt < 2:
+                        time.sleep(0.01)
+            else:
+                raise RuntimeError(
+                    f"present position read failed for motor ID {motor_id} "
+                    "after 3 attempts"
+                ) from last_error
+
             ticks.append(tick)
             position = self._tick_to_rad(tick, motor_id)
             positions.append(position)
             self._pos_cache[motor_id] = position
             self._vel_cache[motor_id] = 0.0
             if index + 1 < len(ids):
-                time.sleep(0.01)
+                time.sleep(0.02)
 
         self._bus.sync_write_goal_ticks(ids, ticks)
         print("[RobotController] Goal Position primed from current hardware position.")

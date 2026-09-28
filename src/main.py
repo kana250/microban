@@ -105,8 +105,8 @@ def main() -> None:
         # Position before re-enabling it. This prevents an abrupt jump before the
         # controlled neutral ramp begins.
         controller.sync_write_torque_enable(motor_ids, [False] * len(motor_ids))
-        initial_positions = controller.hold_present_position(motor_ids)
         controller.sync_write_status_return_level(motor_ids, [1] * len(motor_ids))
+        initial_positions = controller.hold_present_position(motor_ids)
         controller.sync_write_kp(motor_ids, [KP_DEFAULT] * len(motor_ids))
         controller.sync_write_torque_enable(motor_ids, [True] * len(motor_ids))
 
