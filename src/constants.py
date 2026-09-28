@@ -115,7 +115,7 @@ VTHETA_MAX_MOVING: float = 1.5
 IMU_I2C_BUS: int = 1
 
 # Rotation from trunk frame (body) to IMU sensor frame
-IMU_MOUNT_QUAT: tuple[float, float, float, float] = (0.5, -0.5, -0.5, 0.5)
+IMU_MOUNT_QUAT: tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0)
 
 # Observation DoF ordering
 OBSERVATION_DOF_ORDER = [
